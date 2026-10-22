@@ -55,14 +55,21 @@ class DailyCoffeeNavigator:
         return links.get(store, "https://www.google.pl")
 
     @staticmethod
-    def is_strictly_whole_bean_1kg(text: str) -> bool:
+    def is_valid_coffee_1kg(text: str) -> bool:
+        """
+        Wykazuje kawę ziarnistą o wadze 1 kg LUB zestawy 2x500g / 500g+500g.
+        Odrzuca małe paczki 250g bez opcji zestawu.
+        """
         t = text.lower()
-        excluded = ["mielona", "rozpuszczalna", "kapsułki", "kapsulki", "zbożowa", "inpost"]
+        excluded = ["mielona", "rozpuszczalna", "kapsułki", "kapsulki", "zbożowa"]
         if any(bad in t for bad in excluded):
             return False
+
         has_beans = "ziarnista" in t or "ziarno" in t
-        has_weight = any(w in t for w in ["1 kg", "1kg", "1000 g", "1000g"])
-        return has_beans and has_weight
+        has_1kg = any(w in t for w in ["1 kg", "1kg", "1000 g", "1000g"])
+        has_bundle = any(w in t for w in ["2x500", "2 x 500", "500g + 500g", "500 g + 500 g", "dwa opakowania", "drugi produkt"])
+
+        return has_beans and (has_1kg or has_bundle)
 
     def get_taste_profile(self, name: str) -> tuple[str, str, str]:
         n = name.lower()
@@ -124,7 +131,7 @@ class DailyCoffeeNavigator:
         valid_prices = []
         for m in matches:
             val = float(m.replace(",", "."))
-            if 21.0 <= val <= 95.0:
+            if 20.0 <= val <= 95.0:
                 valid_prices.append(val)
         return min(valid_prices) if valid_prices else None
 
@@ -136,8 +143,10 @@ class DailyCoffeeNavigator:
     def search_live_today_promotions(self) -> List[CoffeeOffer]:
         promo_offers = []
         year_str = self.now_pl.strftime("%Y")
+        
         aggregator_urls = [
             "https://ding.pl/szukaj/kawa-ziarnista-1kg",
+            "https://ding.pl/szukaj/kawa-ziarnista-500g",
             "https://promoceny.pl/szukaj/kawa%20ziarnista%201kg",
         ]
         for url in aggregator_urls:
@@ -147,7 +156,7 @@ class DailyCoffeeNavigator:
                     soup = BeautifulSoup(res.text, "html.parser")
                     for item in soup.find_all(["div", "article", "li", "a"]):
                         text = item.get_text(" ", strip=True)
-                        if len(text) > 300 or not self.is_strictly_whole_bean_1kg(text):
+                        if len(text) > 350 or not self.is_valid_coffee_1kg(text):
                             continue
                         if self.is_expired_text(text):
                             continue
@@ -155,15 +164,22 @@ class DailyCoffeeNavigator:
                         if matched_store:
                             price = self.extract_price(text)
                             if price:
-                                clean_name = re.sub(r"\s+", " ", text)[:75]
+                                # Jeśli wykryto zestaw 2x500g z ceną za pojedynczą paczkę, przeliczamy na 1kg
+                                if "500g" in text.lower() or "500 g" in text.lower():
+                                    if "drugi" in text.lower() or "50%" in text.lower() or "tańszy" in text.lower():
+                                        price = price * 1.5  # Szacunkowy koszt zestawu 2x500g w promocji 50% na drugi
+                                    else:
+                                        price = price * 2.0  # Dwie sztuki po 500g
+
+                                clean_name = re.sub(r"\s+", " ", text)[:80]
                                 intens, kwas, prof = self.get_taste_profile(clean_name)
                                 promo_offers.append(
                                     CoffeeOffer(
                                         sklep=matched_store,
-                                        nazwa=clean_name,
+                                        nazwa=f"[PROMOCJA] {clean_name}",
                                         cena=price,
                                         czy_promocja=True,
-                                        status_na_dzis=f"🔥 Promocja gazetkowa ({self.today_str})",
+                                        status_na_dzis=f"🔥 Promocja / Zestaw 1kg ({self.today_str})",
                                         intensywnosc=intens,
                                         kwasowosc=kwas,
                                         profil=prof,
@@ -173,6 +189,55 @@ class DailyCoffeeNavigator:
                                 )
             except Exception:
                 pass
+
+        # Wyszukiwanie dodatkowe w sieci
+        for store in self.stores:
+            query = f"kawa ziarnista 1kg 2x500g promocja {store} {year_str} zł"
+            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}&df=w"
+            try:
+                res = requests.get(url, headers=self.headers, timeout=8)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    for res_box in soup.select(".result__body"):
+                        title_el = res_box.select_one(".result__title")
+                        snippet_el = res_box.select_one(".result__snippet")
+                        link_el = res_box.select_one("a.result__a")
+
+                        full_text = (
+                            (title_el.get_text(" ", strip=True) if title_el else "")
+                            + " - "
+                            + (snippet_el.get_text(" ", strip=True) if snippet_el else "")
+                        )
+
+                        if self.is_expired_text(full_text):
+                            continue
+
+                        if store.lower() in full_text.lower() and self.is_valid_coffee_1kg(full_text):
+                            price = self.extract_price(full_text)
+                            if price:
+                                if "500g" in full_text.lower() and price < 30:
+                                    price = price * 2.0  # Przeliczenie 2x500g na 1kg
+
+                                clean_title = title_el.get_text(" ", strip=True)[:70] if title_el else f"Kawa ziarnista 1kg ({store})"
+                                href = link_el.get("href") if link_el and link_el.get("href", "").startswith("http") else self.get_store_promo_url(store)
+                                intens, kwas, prof = self.get_taste_profile(clean_title)
+                                promo_offers.append(
+                                    CoffeeOffer(
+                                        sklep=store,
+                                        nazwa=f"[GAZETKA] {clean_title}",
+                                        cena=price,
+                                        czy_promocja=True,
+                                        status_na_dzis=f"🔥 Promocja / Gazetka ({self.today_str})",
+                                        intensywnosc=intens,
+                                        kwasowosc=kwas,
+                                        profil=prof,
+                                        link_sklep=href,
+                                        link_mapa=self.get_map_url(store),
+                                    )
+                                )
+            except Exception:
+                pass
+
         return promo_offers
 
     def get_all_today(self) -> List[CoffeeOffer]:
@@ -189,7 +254,7 @@ days_pl = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota",
 day_name = days_pl[now_pl.weekday()]
 today_formatted = now_pl.strftime("%d.%m.%Y")
 
-st.title("☕ Gdzie dzisiaj jechać po najtańszą kawę ZIARNISTĄ 1 kg?")
+st.title("☕ Gdzie dzisiaj jechać po najtańszą kawę ZIARNISTĄ 1 kg (Promocje + Zestawy 2x500g)")
 st.markdown(
     f"📅 **Stan na dzień:** `{day_name}, {today_formatted}` | "
     f"Sieci: **Kaufland, Auchan, Carrefour, Biedronka, Lidl, Dino**"
@@ -200,8 +265,8 @@ city_input = st.text_input(
     placeholder="np. Poznań, Warszawa Mokotów, Wrocław...",
 )
 
-if st.button("🚗 Sprawdź oferty, smaki i opinie z internetu", type="primary"):
-    with st.spinner(f"Pobieram ceny, profile i opinie internautów na dzień {today_formatted}..."):
+if st.button("🚗 Szukaj najtańszych promocji i zestawów", type="primary"):
+    with st.spinner(f"Przeszukuję gazetki, promocje i zestawy 500g+500g na dzień {today_formatted}..."):
         nav = DailyCoffeeNavigator(city=city_input)
         offers = nav.get_all_today()
 
@@ -214,7 +279,7 @@ if st.button("🚗 Sprawdź oferty, smaki i opinie z internetu", type="primary")
 
         st.success(
             f"### 🎯 JEDŹ DZISIAJ DO: **{best['sklep'].upper()}**\n"
-            f"**{best['cena']:.2f} zł** — *{best['nazwa']}* ({best['status_na_dzis']})\n\n"
+            f"**{best['cena']:.2f} zł** (za 1 kg) — *{best['nazwa']}* ({best['status_na_dzis']})\n\n"
             f"👅 **Profil smaku:** Intensywność: **{best['intensywnosc']}** | "
             f"Kwasowość: **{best['kwasowosc']}** | Nuty: *{best['profil']}*"
         )
@@ -227,20 +292,32 @@ if st.button("🚗 Sprawdź oferty, smaki i opinie z internetu", type="primary")
 
         st.divider()
 
-        st.subheader("💬 Co polecają ludzie w internecie? (Ranking opinii konsumentów)")
-        st.write("Oto zestawienie kaw ziarnistych 1 kg najchętniej polecanych na polskich grupach kawowych i forach:")
-        
-        internet_favorites = [
-            {"kawa": "Lavazza Qualita Oro 1 kg", "polecenia": "⭐⭐⭐⭐⭐ (Hit internetu)", "opinia_ludzi": "Najczęściej polecana kawa z dyskontów do ekspresów. Niska kwasowość, nuty kwiatowe."},
-            {"kawa": "Bellarom Crema / Gold (Lidl) 1 kg", "polecenia": "⭐⭐⭐⭐☆ (Król budżetu)", "opinia_ludzi": "Zdecydowany faworyt forów internetowych w kategorii relacji ceny do jakości."},
-            {"kawa": "Woseba Mocca Fix Gold 1 kg", "polecenia": "⭐⭐⭐⭐☆", "opinia_ludzi": "Bardzo aromatyczna, mocna, wyczuwalna czekolada, brak nieprzyjemnej kwasowości."},
-            {"kawa": "Cafe d'Or Gold (Biedronka) 1 kg", "polecenia": "⭐⭐⭐☆☆", "opinia_ludzi": "Dobra opcja budżetowa, łagodna, dobrze smakuje z mlekiem w cappuccino czy latte."}
-        ]
-        st.dataframe(pd.DataFrame(internet_favorites), use_container_width=True)
+        # OSOBNA TABELA TYLKO NA PROMOCJE I ZESTAWY 1KG
+        st.subheader(f"🔥 Aktualne PROMOCJE i zestawy 1 kg (w tym 2x500g) na dzień {today_formatted}:")
+        promo_df = df[df["czy_promocja"] == True].copy()
+
+        if promo_df.empty:
+            st.info("Brak wykrytych specjalnych promocji gazetkowych w tej chwili. Sprawdź pełne zestawienie cen stałych poniżej.")
+        else:
+            promo_df.reset_index(drop=True, inplace=True)
+            st.dataframe(
+                promo_df[["sklep", "nazwa", "cena", "status_na_dzis", "link_sklep"]].rename(
+                    columns={
+                        "sklep": "Sklep",
+                        "nazwa": "Oferta promocyjna",
+                        "cena": "Szacunkowa cena za 1 kg (zł)",
+                        "status_na_dzis": "Typ oferty",
+                        "link_sklep": "Link do gazetki"
+                    }
+                ),
+                column_config={"Link do gazetki": st.column_config.LinkColumn("Link")},
+                use_container_width=True,
+            )
 
         st.divider()
 
-        st.subheader("⭐ Kącik Żony — Oceń wypite kawy!")
+        # KĄCIK ŻONY
+        st.subheader("⭐ Kącik Żony — Oceny i opinie żony")
         if "wife_reviews" not in st.session_state:
             st.session_state.wife_reviews = {}
 
@@ -265,7 +342,8 @@ if st.button("🚗 Sprawdź oferty, smaki i opinie z internetu", type="primary")
 
         st.divider()
 
-        st.subheader(f"🏪 Najtańsza kawa ziarnista i jej smak w 6 sklepach ({today_formatted}):")
+        # KAFELKI SKLEPÓW
+        st.subheader(f"🏪 Najtańsza opcja 1 kg w każdym z 6 sklepów ({today_formatted}):")
         cols = st.columns(3)
         for idx, store in enumerate(nav.stores):
             store_df = df[df["sklep"].str.lower() == store.lower()]
@@ -286,13 +364,14 @@ if st.button("🚗 Sprawdź oferty, smaki i opinie z internetu", type="primary")
 
         st.divider()
 
-        st.subheader("📋 Pełna tabela: Ceny, Profil Smaku i Promocje")
+        # PEŁNA TABELA
+        st.subheader("📋 Pełna tabela: Wszystkie opcje (Promocje, Zestawy 2x500g i Ceny Stałe)")
         st.dataframe(
             df[["sklep", "nazwa", "cena", "intensywnosc", "kwasowosc", "profil", "status_na_dzis"]].rename(
                 columns={
                     "sklep": "Sklep",
-                    "nazwa": "Kawa ziarnista 1 kg",
-                    "cena": "Cena (zł)",
+                    "nazwa": "Kawa ziarnista 1 kg / Zestaw",
+                    "cena": "Cena za 1 kg (zł)",
                     "intensywnosc": "Intensywność",
                     "kwasowosc": "Kwasowość",
                     "profil": "Nuty smakowe",
