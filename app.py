@@ -1,7 +1,7 @@
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import List, Optional
-import urllib.parse
 import pandas as pd
 import requests
 import streamlit as st
@@ -30,28 +30,17 @@ class SmartCoffeeHunter:
         }
 
     def get_regular_baseline_prices(self) -> List[CoffeeOffer]:
-        """
-        Zwraca aktualne ceny regularne najtańszych kaw 1 kg (głównie marek własnych)
-        dostępnych na stałe w ofercie poszczególnych 6 sieci.
-        Dzięki temu program zawsze porównuje ceny ze stałego asortymentu z ofertami dnia.
-        """
         return [
-            # Biedronka - stała oferta marek własnych 1 kg
             CoffeeOffer("Biedronka", "Kawa ziarnista Cafe d'Or Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Biedronka"),
             CoffeeOffer("Biedronka", "Kawa ziarnista Cafe d'Or Gold 1kg", 39.99, "Cena regularna (półkowa)", "Stała oferta Biedronka"),
-            # Lidl - stała oferta marek własnych 1 kg
             CoffeeOffer("Lidl", "Kawa ziarnista Bellarom Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Lidl"),
             CoffeeOffer("Lidl", "Kawa ziarnista Bellarom Gold 1kg", 39.99, "Cena regularna (półkowa)", "Stała oferta Lidl"),
-            # Kaufland - stała oferta marek własnych 1 kg
             CoffeeOffer("Kaufland", "Kawa ziarnista K-Classic Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Kaufland"),
             CoffeeOffer("Kaufland", "Kawa ziarnista Jacobs Kronung / Tchibo Family 1kg", 49.99, "Cena regularna (półkowa)", "Stała oferta Kaufland"),
-            # Auchan - stała oferta najtańszych kaw 1 kg
             CoffeeOffer("Auchan", "Kawa ziarnista Auchan (Kciuk) / Pouce 1kg", 29.99, "Cena regularna (półkowa)", "Stała oferta Auchan"),
-            CoffeeOffer("Auchan", "Kawa ziarnistaAuchan Classic Crema 1kg", 34.98, "Cena regularna (półkowa)", "Stała oferta Auchan"),
-            # Carrefour - stała oferta najtańszych kaw 1 kg
+            CoffeeOffer("Auchan", "Kawa ziarnista Auchan Classic Crema 1kg", 34.98, "Cena regularna (półkowa)", "Stała oferta Auchan"),
             CoffeeOffer("Carrefour", "Kawa ziarnista Simpl / Carrefour Classic 1kg", 31.99, "Cena regularna (półkowa)", "Stała oferta Carrefour"),
             CoffeeOffer("Carrefour", "Kawa ziarnista Carrefour Sensation 1kg", 36.99, "Cena regularna (półkowa)", "Stała oferta Carrefour"),
-            # Dino - stała oferta najtańszych kaw 1 kg
             CoffeeOffer("Dino", "Kawa ziarnista Prima Finezja / Woseba 1kg", 38.99, "Cena regularna (półkowa)", "Stała oferta Dino"),
             CoffeeOffer("Dino", "Kawa ziarnista Tchibo Family 1kg", 44.99, "Cena regularna (półkowa)", "Stała oferta Dino"),
         ]
@@ -60,7 +49,6 @@ class SmartCoffeeHunter:
     def extract_price(text: str) -> Optional[float]:
         if not text:
             return None
-        # Szuka wzorca ceny w zł (np. 34,99 zł lub 29.99)
         matches = re.findall(r"(\d{2}[\.,]\d{2})\s*(?:zł|PLN)?", text, re.IGNORECASE)
         valid_prices = []
         for m in matches:
@@ -70,10 +58,6 @@ class SmartCoffeeHunter:
         return min(valid_prices) if valid_prices else None
 
     def search_live_web_offers(self) -> List[CoffeeOffer]:
-        """
-        Przeszukuje zindeksowane na żywo oferty (ceny e-sklepów oraz bieżące obniżki)
-        przez bramkę odporną na blokady zagranicznego IP serwera Streamlit.
-        """
         live_offers = []
         for store in self.stores:
             query = f"kawa ziarnista 1kg cena {store} zł"
@@ -122,13 +106,12 @@ class SmartCoffeeHunter:
         return all_items
 
 
-# --- INTERFEJS STRONY ---
 st.set_page_config(page_title="Porównywarka cen kawy 1 kg", page_icon="☕", layout="wide")
 st.title("☕ Porównywarka cen kawy 1 kg (Ceny stałe + Promocje)")
 st.write("Obsługiwane sklepy: **Kaufland, Auchan, Carrefour, Biedronka, Lidl, Dino**")
 
 if st.button("🔍 Szukaj najtańszej kawy", type="primary"):
-    with st.spinner("Sprawdzam stały asortyment (ceny regularne) oraz aktualne obniżki we wszystkich 6 sklepach..."):
+    with st.spinner("Sprawdzam stały asortyment oraz aktualne obniżki we wszystkich 6 sklepach..."):
         hunter = SmartCoffeeHunter()
         offers = hunter.get_all_current_prices()
 
@@ -137,7 +120,6 @@ if st.button("🔍 Szukaj najtańszej kawy", type="primary"):
         df.drop_duplicates(subset=["sklep", "nazwa", "cena"], inplace=True)
         df.reset_index(drop=True, inplace=True)
 
-        # Najabsolutniej najtańsza kawa ze wszystkich 6 sklepów
         best_overall = df.iloc[0]
         st.success(
             f"🥇 **Najtańsza kawa 1 kg w tym momencie ogółem:** "
@@ -174,5 +156,3 @@ if st.button("🔍 Szukaj najtańszej kawy", type="primary"):
             ),
             use_container_width=True,
         )
-            st.subheader("📋 Wszystkie znalezione oferty (od najtańszej):")
-            st.dataframe(df, use_container_width=True)
