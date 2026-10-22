@@ -52,11 +52,8 @@ class DailyCoffeeNavigator:
         return links.get(store, "https://www.google.pl")
 
     @staticmethod
-    def is_ strictly_whole_bean_1kg(text: str) -> bool:
-        """
-        Sprawdza, czy oferta dotyczy WYŁĄCZNIE kawy ziarnistej 1 kg (1000 g).
-        Odrzuca kawy mielone, rozpuszczalne, zbożowe i kapsułki.
-        """
+    def is_strictly_whole_bean_1kg(text: str) -> bool:
+        """Sprawdza, czy oferta dotyczy WYŁĄCZNIE kawy ziarnistej 1 kg (1000 g)."""
         t = text.lower()
         excluded = ["mielona", "rozpuszczalna", "kapsułki", "kapsulki", "zbożowa", "inpost"]
         if any(bad in t for bad in excluded):
@@ -67,7 +64,6 @@ class DailyCoffeeNavigator:
         return has_beans and has_weight
 
     def get_regular_baseline_prices(self) -> List[CoffeeOffer]:
-        """Stały asortyment (tylko kawa ziarnista 1 kg) dostępny każdego dnia."""
         base = [
             ("Auchan", "Kawa ziarnista Auchan (Kciuk) / Pouce 1kg", 29.99),
             ("Carrefour", "Kawa ziarnista Simpl / Carrefour Classic 1kg", 31.99),
@@ -123,11 +119,9 @@ class DailyCoffeeNavigator:
         return any(w in t for w in expired_keywords)
 
     def search_live_today_promotions(self) -> List[CoffeeOffer]:
-        """Szuka aktualnych promocji wyłącznie na kawę ziarnistą 1 kg."""
         promo_offers = []
         year_str = self.now_pl.strftime("%Y")
 
-        # 1. Sprawdzenie agregatorów gazetek (Ding / Promoceny) pod kątem kawy ziarnistej
         aggregator_urls = [
             "https://ding.pl/szukaj/kawa-ziarnista-1kg",
             "https://promoceny.pl/szukaj/kawa%20ziarnista%201kg",
@@ -162,3 +156,183 @@ class DailyCoffeeNavigator:
                                         link_mapa=self.get_map_url(matched_store),
                                     )
                                 )
+            except Exception:
+                pass
+
+        for store in self.stores:
+            query = f"kawa ziarnista 1kg promocja gazetka {store} {year_str} zł"
+            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}&df=w"
+            try:
+                res = requests.get(url, headers=self.headers, timeout=8)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    for res_box in soup.select(".result__body"):
+                        title_el = res_box.select_one(".result__title")
+                        snippet_el = res_box.select_one(".result__snippet")
+                        link_el = res_box.select_one("a.result__a")
+
+                        full_text = (
+                            (title_el.get_text(" ", strip=True) if title_el else "")
+                            + " - "
+                            + (snippet_el.get_text(" ", strip=True) if snippet_el else "")
+                        )
+
+                        if self.is_expired_text(full_text):
+                            continue
+
+                        if store.lower() in full_text.lower() and self.is_strictly_whole_bean_1kg(full_text):
+                            price = self.extract_price(full_text)
+                            if price:
+                                clean_title = (
+                                    title_el.get_text(" ", strip=True)[:70]
+                                    if title_el
+                                    else f"Kawa ziarnista 1kg ({store})"
+                                )
+                                if "ziarnista" not in clean_title.lower():
+                                    clean_title = f"Kawa ziarnista 1kg - {clean_title}"
+
+                                href = (
+                                    link_el.get("href")
+                                    if link_el and link_el.get("href", "").startswith("http")
+                                    else self.get_store_promo_url(store)
+                                )
+                                promo_offers.append(
+                                    CoffeeOffer(
+                                        sklep=store,
+                                        nazwa=clean_title,
+                                        cena=price,
+                                        czy_promocja=True,
+                                        status_na_dzis=f"🔥 Aktualna promocja ({self.today_str})",
+                                        link_sklep=href,
+                                        link_mapa=self.get_map_url(store),
+                                    )
+                                )
+            except Exception:
+                pass
+
+        return promo_offers
+
+    def get_all_today(self) -> List[CoffeeOffer]:
+        items = self.get_regular_baseline_prices()
+        items.extend(self.search_live_today_promotions())
+        return items
+
+
+st.set_page_config(page_title="Gdzie dziś po kawę ziarnistą 1 kg?", page_icon="☕", layout="wide")
+
+now_pl = datetime.now(ZoneInfo("Europe/Warsaw"))
+days_pl = [
+    "Poniedziałek",
+    "Wtorek",
+    "Środa",
+    "Czwartek",
+    "Piątek",
+    "Sobota",
+    "Niedziela",
+]
+day_name = days_pl[now_pl.weekday()]
+today_formatted = now_pl.strftime("%d.%m.%Y")
+
+st.title("☕ Gdzie dzisiaj jechać po najtańszą kawę ZIARNISTĄ 1 kg?")
+st.markdown(
+    f"📅 **Stan na dzień:** `{day_name}, {today_formatted}` (godz. `{now_pl.strftime('%H:%M')}`) | "
+    f"Filtr: **Tylko kawa ziarnista 1 kg** | Sieci: **Kaufland, Auchan, Carrefour, Biedronka, Lidl, Dino**"
+)
+
+city_input = st.text_input(
+    "📍 Wpisz swoje miasto lub dzielnicę (opcjonalnie, aby wyznaczyć dokładną trasę na mapie):",
+    placeholder="np. Poznań, Warszawa Mokotów, Wrocław...",
+)
+
+if st.button("🚗 Sprawdź, gdzie dzisiaj jechać po kawę ziarnistą", type="primary"):
+    with st.spinner(f"Przeszukuję ceny stałe i gazetki promocyjne ważne na dzień {today_formatted}..."):
+        nav = DailyCoffeeNavigator(city=city_input)
+        offers = nav.get_all_today()
+
+        df = pd.DataFrame([vars(o) for o in offers])
+        df.sort_values(by="cena", ascending=True, inplace=True)
+        df.drop_duplicates(subset=["sklep", "nazwa", "cena"], inplace=True)
+        df.reset_index(drop=True, inplace=True)
+
+        best = df.iloc[0]
+
+        st.success(
+            f"### 🎯 JEDŹ DZISIAJ DO: **{best['sklep'].upper()}**\n"
+            f"Najtańsza kawa ziarnista 1 kg na dziś ({today_formatted}) kosztuje tam **{best['cena']:.2f} zł** "
+            f"— *{best['nazwa']}* ({best['status_na_dzis']})."
+        )
+
+        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+        with btn_col1:
+            st.link_button(
+                f"🗺️ Nawiguj do najbliższego {best['sklep']}",
+                best["link_mapa"],
+                use_container_width=True,
+            )
+        with btn_col2:
+            st.link_button(
+                f"🔗 Zobacz ofertę / gazetkę {best['sklep']}",
+                best["link_sklep"],
+                use_container_width=True,
+            )
+
+        st.divider()
+
+        st.subheader(f"🔥 Aktualne PROMOCJE na kawę ziarnistą 1 kg ({today_formatted}):")
+        promo_df = df[df["czy_promocja"] == True].copy()
+
+        if promo_df.empty:
+            st.info(
+                "Brak wykrytych specjalnych promocji gazetkowych w tej chwili — poniżej znajdziesz najtańsze kawy ziarniste 1 kg ze stałej oferty każdego sklepu."
+            )
+        else:
+            promo_df.reset_index(drop=True, inplace=True)
+            st.dataframe(
+                promo_df[["sklep", "nazwa", "cena", "status_na_dzis", "link_sklep"]].rename(
+                    columns={
+                        "sklep": "Sklep",
+                        "nazwa": "Kawa ziarnista 1 kg w promocji",
+                        "cena": "Cena promocyjna (zł)",
+                        "status_na_dzis": "Status promocji",
+                        "link_sklep": "Link do oferty/gazetki",
+                    }
+                ),
+                column_config={
+                    "Link do oferty/gazetki": st.column_config.LinkColumn("Link do gazetki")
+                },
+                use_container_width=True,
+            )
+
+        st.divider()
+
+        st.subheader(f"🏪 Najtańsza kawa ziarnista 1 kg w każdym z 6 sklepów ({today_formatted}):")
+        cols = st.columns(3)
+        for idx, store in enumerate(nav.stores):
+            store_df = df[df["sklep"].str.lower() == store.lower()]
+            with cols[idx % 3]:
+                if not store_df.empty:
+                    top_store = store_df.iloc[0]
+                    with st.container(border=True):
+                        st.markdown(f"#### 🛒 {store} — **{top_store['cena']:.2f} zł**")
+                        st.caption(f"☕ **{top_store['nazwa']}**")
+                        st.caption(f"🕒 {top_store['status_na_dzis']}")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.link_button("🗺️ Jedź tam", top_store["link_mapa"], use_container_width=True)
+                        with c2:
+                            st.link_button("🔗 Oferta", top_store["link_sklep"], use_container_width=True)
+
+        st.divider()
+
+        st.subheader("📋 Wszystkie oferty kawy ziarnistej 1 kg (Ceny stałe + Promocje):")
+        st.dataframe(
+            df[["sklep", "nazwa", "cena", "status_na_dzis"]].rename(
+                columns={
+                    "sklep": "Sklep",
+                    "nazwa": "Nazwa kawy ziarnistej 1 kg",
+                    "cena": "Cena (zł)",
+                    "status_na_dzis": "Rodzaj oferty",
+                }
+            ),
+            use_container_width=True,
+        )
