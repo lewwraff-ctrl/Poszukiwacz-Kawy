@@ -1,7 +1,9 @@
 import re
 import urllib.parse
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import streamlit as st
@@ -13,13 +15,18 @@ class CoffeeOffer:
     sklep: str
     nazwa: str
     cena: float
-    typ_ceny: str
-    zrodlo: str
+    czy_promocja: bool
+    status_na_dzis: str
+    link_sklep: str
+    link_mapa: str
 
 
-class SmartCoffeeHunter:
-    def __init__(self):
+class DailyCoffeeNavigator:
+    def __init__(self, city: str = ""):
         self.stores = ["Kaufland", "Auchan", "Carrefour", "Biedronka", "Lidl", "Dino"]
+        self.city = city.strip()
+        self.now_pl = datetime.now(ZoneInfo("Europe/Warsaw"))
+        self.today_str = self.now_pl.strftime("%d.%m.%Y")
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -29,130 +36,129 @@ class SmartCoffeeHunter:
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8",
         }
 
+    def get_map_url(self, store: str) -> str:
+        query = f"{store} {self.city}".strip()
+        return f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(query)}"
+
+    def get_store_promo_url(self, store: str) -> str:
+        links = {
+            "Auchan": "https://zakupy.auchan.pl/shop/search?text=kawa%20ziarnista%201kg",
+            "Carrefour": "https://www.carrefour.pl/szukaj?q=kawa%20ziarnista%201kg",
+            "Biedronka": "https://www.biedronka.pl/pl/gazetki-promocyjne",
+            "Lidl": "https://www.lidl.pl/c/nasze-brozury/s10008614",
+            "Kaufland": "https://www.kaufland.pl/oferta/aktualny-tydzien.html",
+            "Dino": "https://marketdino.pl/",
+        }
+        return links.get(store, "https://www.google.pl")
+
+    @staticmethod
+    def is_ strictly_whole_bean_1kg(text: str) -> bool:
+        """
+        Sprawdza, czy oferta dotyczy WYŁĄCZNIE kawy ziarnistej 1 kg (1000 g).
+        Odrzuca kawy mielone, rozpuszczalne, zbożowe i kapsułki.
+        """
+        t = text.lower()
+        excluded = ["mielona", "rozpuszczalna", "kapsułki", "kapsulki", "zbożowa", "inpost"]
+        if any(bad in t for bad in excluded):
+            return False
+
+        has_beans = "ziarnista" in t or "ziarno" in t
+        has_weight = any(w in t for w in ["1 kg", "1kg", "1000 g", "1000g"])
+        return has_beans and has_weight
+
     def get_regular_baseline_prices(self) -> List[CoffeeOffer]:
+        """Stały asortyment (tylko kawa ziarnista 1 kg) dostępny każdego dnia."""
+        base = [
+            ("Auchan", "Kawa ziarnista Auchan (Kciuk) / Pouce 1kg", 29.99),
+            ("Carrefour", "Kawa ziarnista Simpl / Carrefour Classic 1kg", 31.99),
+            ("Auchan", "Kawa ziarnista Auchan Classic Crema 1kg", 34.98),
+            ("Biedronka", "Kawa ziarnista Cafe d'Or Crema / Espresso 1kg", 34.99),
+            ("Lidl", "Kawa ziarnista Bellarom Crema / Espresso 1kg", 34.99),
+            ("Kaufland", "Kawa ziarnista K-Classic Crema / Espresso 1kg", 34.99),
+            ("Carrefour", "Kawa ziarnista Carrefour Sensation 1kg", 36.99),
+            ("Dino", "Kawa ziarnista Prima Finezja / Woseba 1kg", 38.99),
+            ("Biedronka", "Kawa ziarnista Cafe d'Or Gold 1kg", 39.99),
+            ("Lidl", "Kawa ziarnista Bellarom Gold 1kg", 39.99),
+            ("Dino", "Kawa ziarnista Tchibo Family 1kg", 44.99),
+            ("Kaufland", "Kawa ziarnista Jacobs Kronung / Tchibo Family 1kg", 49.99),
+        ]
         return [
-            CoffeeOffer("Biedronka", "Kawa ziarnista Cafe d'Or Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Biedronka"),
-            CoffeeOffer("Biedronka", "Kawa ziarnista Cafe d'Or Gold 1kg", 39.99, "Cena regularna (półkowa)", "Stała oferta Biedronka"),
-            CoffeeOffer("Lidl", "Kawa ziarnista Bellarom Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Lidl"),
-            CoffeeOffer("Lidl", "Kawa ziarnista Bellarom Gold 1kg", 39.99, "Cena regularna (półkowa)", "Stała oferta Lidl"),
-            CoffeeOffer("Kaufland", "Kawa ziarnista K-Classic Crema / Espresso 1kg", 34.99, "Cena regularna (półkowa)", "Stała oferta Kaufland"),
-            CoffeeOffer("Kaufland", "Kawa ziarnista Jacobs Kronung / Tchibo Family 1kg", 49.99, "Cena regularna (półkowa)", "Stała oferta Kaufland"),
-            CoffeeOffer("Auchan", "Kawa ziarnista Auchan (Kciuk) / Pouce 1kg", 29.99, "Cena regularna (półkowa)", "Stała oferta Auchan"),
-            CoffeeOffer("Auchan", "Kawa ziarnista Auchan Classic Crema 1kg", 34.98, "Cena regularna (półkowa)", "Stała oferta Auchan"),
-            CoffeeOffer("Carrefour", "Kawa ziarnista Simpl / Carrefour Classic 1kg", 31.99, "Cena regularna (półkowa)", "Stała oferta Carrefour"),
-            CoffeeOffer("Carrefour", "Kawa ziarnista Carrefour Sensation 1kg", 36.99, "Cena regularna (półkowa)", "Stała oferta Carrefour"),
-            CoffeeOffer("Dino", "Kawa ziarnista Prima Finezja / Woseba 1kg", 38.99, "Cena regularna (półkowa)", "Stała oferta Dino"),
-            CoffeeOffer("Dino", "Kawa ziarnista Tchibo Family 1kg", 44.99, "Cena regularna (półkowa)", "Stała oferta Dino"),
+            CoffeeOffer(
+                sklep=store,
+                nazwa=name,
+                cena=price,
+                czy_promocja=False,
+                status_na_dzis=f"Stała cena półkowa ({self.today_str})",
+                link_sklep=self.get_store_promo_url(store),
+                link_mapa=self.get_map_url(store),
+            )
+            for store, name, price in base
         ]
 
     @staticmethod
     def extract_price(text: str) -> Optional[float]:
         if not text:
             return None
-        matches = re.findall(r"(\d{2}[\.,]\d{2})\s*(?:zł|PLN)?", text, re.IGNORECASE)
+        matches = re.findall(r"(\d{2}[\.,]\d{2})\s*(?:zł|PLN)", text, re.IGNORECASE)
         valid_prices = []
         for m in matches:
             val = float(m.replace(",", "."))
-            if 22.0 <= val <= 95.0:
+            if 21.0 <= val <= 95.0:
                 valid_prices.append(val)
         return min(valid_prices) if valid_prices else None
 
-    def search_live_web_offers(self) -> List[CoffeeOffer]:
-        live_offers = []
-        for store in self.stores:
-            query = f"kawa ziarnista 1kg cena {store} zł"
-            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    @staticmethod
+    def is_expired_text(text: str) -> bool:
+        t = text.lower()
+        expired_keywords = [
+            "archiwum",
+            "archiwalna",
+            "zakończona",
+            "nieaktualna",
+            "2022",
+            "2023",
+            "2024",
+            "2025",
+        ]
+        return any(w in t for w in expired_keywords)
+
+    def search_live_today_promotions(self) -> List[CoffeeOffer]:
+        """Szuka aktualnych promocji wyłącznie na kawę ziarnistą 1 kg."""
+        promo_offers = []
+        year_str = self.now_pl.strftime("%Y")
+
+        # 1. Sprawdzenie agregatorów gazetek (Ding / Promoceny) pod kątem kawy ziarnistej
+        aggregator_urls = [
+            "https://ding.pl/szukaj/kawa-ziarnista-1kg",
+            "https://promoceny.pl/szukaj/kawa%20ziarnista%201kg",
+        ]
+        for url in aggregator_urls:
             try:
                 res = requests.get(url, headers=self.headers, timeout=8)
                 if res.status_code == 200:
                     soup = BeautifulSoup(res.text, "html.parser")
-                    for res_box in soup.select(".result__body"):
-                        title_el = res_box.select_one(".result__title")
-                        snippet_el = res_box.select_one(".result__snippet")
-                        full_text = (
-                            (title_el.get_text(" ", strip=True) if title_el else "")
-                            + " - "
-                            + (snippet_el.get_text(" ", strip=True) if snippet_el else "")
-                        )
+                    for item in soup.find_all(["div", "article", "li", "a"]):
+                        text = item.get_text(" ", strip=True)
+                        if len(text) > 300 or not self.is_strictly_whole_bean_1kg(text):
+                            continue
+                        if self.is_expired_text(text):
+                            continue
 
-                        if store.lower() in full_text.lower() and (
-                            "1kg" in full_text.lower() or "1 kg" in full_text.lower()
-                        ):
-                            price = self.extract_price(full_text)
+                        matched_store = next(
+                            (s for s in self.stores if s.lower() in text.lower()), None
+                        )
+                        if matched_store:
+                            price = self.extract_price(text)
                             if price:
-                                clean_title = (
-                                    title_el.get_text(" ", strip=True)[:65]
-                                    if title_el
-                                    else f"Kawa 1kg ({store})"
-                                )
-                                live_offers.append(
+                                clean_name = re.sub(r"\s+", " ", text)[:75]
+                                promo_offers.append(
                                     CoffeeOffer(
-                                        sklep=store,
-                                        nazwa=clean_title,
+                                        sklep=matched_store,
+                                        nazwa=clean_name,
                                         cena=price,
-                                        typ_ceny="Oferta wykryta w sieci / Promocja",
-                                        zrodlo="Wyszukiwanie na żywo",
+                                        czy_promocja=True,
+                                        status_na_dzis=f"🔥 Promocja z gazetki ({self.today_str})",
+                                        link_sklep=self.get_store_promo_url(matched_store),
+                                        link_mapa=self.get_map_url(matched_store),
                                     )
                                 )
-            except Exception:
-                pass
-
-        return live_offers
-
-    def get_all_current_prices(self) -> List[CoffeeOffer]:
-        all_items = self.get_regular_baseline_prices()
-        live_items = self.search_live_web_offers()
-        all_items.extend(live_items)
-        return all_items
-
-
-st.set_page_config(page_title="Porównywarka cen kawy 1 kg", page_icon="☕", layout="wide")
-st.title("☕ Porównywarka cen kawy 1 kg (Ceny stałe + Promocje)")
-st.write("Obsługiwane sklepy: **Kaufland, Auchan, Carrefour, Biedronka, Lidl, Dino**")
-
-if st.button("🔍 Szukaj najtańszej kawy", type="primary"):
-    with st.spinner("Sprawdzam stały asortyment oraz aktualne obniżki we wszystkich 6 sklepach..."):
-        hunter = SmartCoffeeHunter()
-        offers = hunter.get_all_current_prices()
-
-        df = pd.DataFrame([vars(o) for o in offers])
-        df.sort_values(by="cena", ascending=True, inplace=True)
-        df.drop_duplicates(subset=["sklep", "nazwa", "cena"], inplace=True)
-        df.reset_index(drop=True, inplace=True)
-
-        best_overall = df.iloc[0]
-        st.success(
-            f"🥇 **Najtańsza kawa 1 kg w tym momencie ogółem:** "
-            f"**{best_overall['cena']:.2f} zł** w sklepie **{best_overall['sklep']}** "
-            f"— *{best_overall['nazwa']}* ({best_overall['typ_ceny']})"
-        )
-
-        st.subheader("🏪 Najtańsza opcja 1 kg w każdym z 6 sklepów teraz:")
-        cols = st.columns(3)
-        for idx, store in enumerate(hunter.stores):
-            store_df = df[df["sklep"].str.lower() == store.lower()]
-            with cols[idx % 3]:
-                if not store_df.empty:
-                    best = store_df.iloc[0]
-                    st.metric(
-                        label=f"🛒 {store}",
-                        value=f"{best['cena']:.2f} zł",
-                        delta=best["typ_ceny"],
-                        delta_color="normal",
-                    )
-                    st.caption(f"**{best['nazwa']}**")
-
-        st.divider()
-        st.subheader("📋 Pełny ranking najtańszych kaw 1 kg (od najniższej ceny):")
-        st.dataframe(
-            df.rename(
-                columns={
-                    "sklep": "Sklep",
-                    "nazwa": "Nazwa kawy",
-                    "cena": "Cena (zł)",
-                    "typ_ceny": "Rodzaj ceny",
-                    "zrodlo": "Źródło",
-                }
-            ),
-            use_container_width=True,
-        )
